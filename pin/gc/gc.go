@@ -10,6 +10,7 @@ import (
 	bserv "github.com/ipfs/go-ipfs/blockservice"
 	dag "github.com/ipfs/go-ipfs/merkledag"
 	pin "github.com/ipfs/go-ipfs/pin"
+	"github.com/ipfs/go-ipfs/thirdparty/recpinset"
 	"github.com/ipfs/go-ipfs/thirdparty/verifcid"
 
 	offline "gx/ipfs/QmPf114DXfa6TqGKYhBGR7EtXRho4rCJgwyA1xkuMY5vwF/go-ipfs-exchange-offline"
@@ -166,6 +167,54 @@ func Descendants(ctx context.Context, getLinks dag.GetLinks, set *cid.Set, roots
 	return nil
 }
 
+func DescendantsToDepth(ctx context.Context, getLinks dag.GetLinks, set *cid.Set, roots []*recpinset.RecPin) error {
+	verifyGetLinks := func(ctx context.Context, c *cid.Cid) ([]*ipld.Link, error) {
+		err := verifcid.ValidateCid(c)
+		if err != nil {
+			return nil, err
+		}
+
+		return getLinks(ctx, c)
+	}
+
+	verboseCidError := func(err error) error {
+		if strings.Contains(err.Error(), verifcid.ErrBelowMinimumHashLength.Error()) ||
+			strings.Contains(err.Error(), verifcid.ErrPossiblyInsecureHashFunction.Error()) {
+			err = fmt.Errorf("\"%s\"\nPlease run 'ipfs pin verify'"+
+				" to list insecure hashes. If you want to read them,"+
+				" please downgrade your go-ipfs to 0.4.13\n", err)
+			log.Error(err)
+		}
+		return err
+	}
+
+	recSet := recpinset.New()
+
+	for _, recPin := range roots {
+		set.Add(recPin.Cid)
+
+		// EnumerateChildren recursively walks the dag and adds the keys to the given set
+		err := dag.EnumerateChildrenMaxDepth(
+			ctx,
+			verifyGetLinks,
+			recPin.Cid,
+			recPin.MaxDepth,
+			recSet.Visit,
+		)
+
+		if err != nil {
+			err = verboseCidError(err)
+			return err
+		}
+	}
+
+	for _, k := range recSet.Keys() {
+		set.Add(k)
+	}
+
+	return nil
+}
+
 // ColoredSet computes the set of nodes in the graph that are pinned by the
 // pins in the given pinner.
 func ColoredSet(ctx context.Context, pn pin.Pinner, ng ipld.NodeGetter, bestEffortRoots []*cid.Cid, output chan<- Result) (*cid.Set, error) {
@@ -181,7 +230,7 @@ func ColoredSet(ctx context.Context, pn pin.Pinner, ng ipld.NodeGetter, bestEffo
 		}
 		return links, nil
 	}
-	err := Descendants(ctx, getLinks, gcs, pn.RecursiveKeys())
+	err := DescendantsToDepth(ctx, getLinks, gcs, pn.RecursivePins())
 	if err != nil {
 		errors = true
 		output <- Result{Error: err}
