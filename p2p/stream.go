@@ -36,15 +36,19 @@ func (s *Stream) Close() error {
 // Reset closes stream endpoints and deregisters it
 func (s *Stream) Reset() error {
 	s.Local.Close()
-	s.Remote.Reset()
+	s.Remote.Close()
 	s.Registry.Deregister(s.id)
 	return nil
 }
 
 func (s *Stream) startStreaming() {
 	go func() {
-		io.Copy(s.Local, s.Remote)
-		s.Reset()
+		_, err := io.Copy(s.Local, s.Remote)
+		if err != nil {
+			s.Reset()
+		} else {
+			s.Close()
+		}
 	}()
 
 	go func() {
